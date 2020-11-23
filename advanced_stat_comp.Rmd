@@ -1,0 +1,719 @@
+---
+title: "Advanced Statistical Computing: Endterm Project 2020"
+output: html_document
+---
+
+### Name: Deniz Sen
+
+### ULCN: 1486438
+
+```{r label = preps, echo=FALSE}
+rm(list=ls()) #clears your workspace
+```
+### Load data and Packages
+
+```{r}
+getwd()
+library(copula)
+data = read.csv("insurance.csv")
+data = data[,-1]
+x1 = data[,1]
+x2 = data[,2]
+```
+
+### Illustrate the dependence in the data with a graph.
+```{r}
+# Graph Dependency 
+plot(data[,1], data[,2], xlim = c(0, 30), ylim = c(0, 50), pch = 1,  cex = 1,
+     col = "darkblue",
+     main = "Scatterpot: PLI vs WC" ,xlab = "PLI", ylab = "WC")
+abline(lm(data[,2] ~ data[,1]), col='red', lwd = 2)
+legend("topright", "Linear Relation", 
+       col = "red", lty = 1, lwd = 2, cex = 0.70)
+cor(data[,1], data[,2], method ="pearson") 
+
+# Graph Price as a function of threshold t
+t = t = seq(from = 100, to = 200, by = 10) #threshold t
+P = function(t) {
+  40000 * exp(-t / 7) 
+}
+plot(t, P(t), type = "l", lwd= 2,  main = "Price as a function of threshold t",
+     xlab = "Threshold t", ylab = "Price", col ="darkblue")
+legend("topright", "P(t)", 
+       col = "darkblue", lty = 1, lwd = 2, cex = 0.70)
+```
+
+### Maximum Likelihood estimation of f_x_j , j = 1,2
+
+```{r}
+theta = rbind( c(mean(x1), sd(x1)), c(mean(x2), sd(x2)))
+theta
+log_l = function(theta, data){
+  mu = theta[1]
+  sigma = theta[2]
+  logl = suppressWarnings(-sum(log(dlnorm(data, meanlog = mu, sdlog = sigma))))
+  return(logl)
+}
+res_optim = matrix(0, nrow = nrow(theta), ncol = 2)
+for(i in 1: nrow(theta)) {
+  res_optim[i,] = optim(par = theta[i,], fn = log_l, data = data[,i], method="BFGS")$par
+}
+colnames(res_optim) = c("mu", "sigma")
+res_optim
+```
+
+### Function that fits the parameter of a Joe copula model.
+```{r}
+copula_mod = function (theta, data) {
+  res_optim_temp = matrix(0, nrow = 1, ncol = 2)
+  Fx = matrix(0, nrow = nrow(data), ncol = 2)
+  for(i in 1: nrow(theta)) {
+    res_optim_temp = optim(par = theta[i,], fn = log_l, data = data[,i], method="BFGS")$par
+    Fx[,i] = plnorm(data[,i], meanlog = res_optim_temp[1], sdlog = res_optim_temp[2])
+  }
+  U = Fx #pseudo observations
+  return(U)
+}
+
+# generate pseudo observations
+U = copula_mod(theta, data)
+
+# log likelihood of copula density
+copula_log_l = function(theta, data) {
+  -sum(log(dCopula(data, joeCopula(theta))))
+}
+res_optim_copula = t(matrix(optimize(copula_log_l, data = U, lower = 1e-6, upper = 5)))
+colnames(res_optim_copula) = c("copula_theta", "max_log_l_hood") # standard error corresponding max LL
+
+# Compare values using fitCopula() 
+fit_copula = fitCopula(joeCopula(), data = U)
+summary(fit_copula)
+res_optim_copula  # results are the same
+```
+
+
+### Function that estimates all model parameters
+```{r}
+copula_fit = function(theta, data){
+  #i. & ii. Compute estimates (mu_j, sigma_j), j =1,2 by maximum likelihood.
+  res_mle = matrix(0, nrow = nrow(theta), ncol = 2)
+  for(i in 1: nrow(theta)) {
+    res_mle[i,] = optim(par = theta[i,], fn = log_l, data = data[,i], method="BFGS")$par
+  }
+  colnames(res_mle) = c("mu", "sigma")
+  # iii. Set U_j = F_mu_j,sigma_j (X_j),j=1,2 and estimate the parameters of 
+  # a Joe copula model for (U_1,U_2)
+  U = copula_mod(theta, data) # helper function "copula_mod" defined above
+  
+  res_theta_copula = t(matrix(unlist(optimize(copula_log_l, data = U, lower = 1e-6, upper = 5))))
+  colnames(res_theta_copula) = c("sd_err", "MLL") # standard error corresponding max
+  all_thetas = as.matrix(c(res_mle, res_theta_copula)) 
+  row.names(all_thetas) = c("mle_mu1","mle_mu2", "mle_sigma1", "mle_sigma2", 
+                       "copula_theta", "copula_ml")
+  colnames(all_thetas) = "estimates"
+  return(all_thetas)
+}
+fit = copula_fit(theta, data)
+fit
+theta
+```
+
+### Function that simulates from the joint model for (X_1,X_2)
+```{r}
+sim_join_mod_obs = function(mu1, sigma1, mu2, sigma2, theta, n) {
+  sim = rCopula(n, joeCopula(theta))
+  # transform uniform to log-normal
+  x1 = qlnorm(sim[, 1], meanlog = mu1, sdlog = sigma1)
+  x2 = qlnorm(sim[, 2], meanlog = mu2, sdlog = sigma2)
+  return(cbind(x1, x2))
+}
+n = dim(data)[1]
+sim_join_res = sim_join_mod_obs(mu1 = fit[1,], mu2= fit[2,], 
+             sigma1=fit[3,], sigma2=fit[4,], 
+             theta = fit[5,], n = n)
+```
+
+### Compare the simulated data with the observed data. 
+```{r}
+
+plot(x = data[,1], y = data[,2], pch = 1, cex = 1, col = "blue",
+     main = "Scatterplot: Observed vs. Simulated data ", xlab = "PLI", 
+     ylab = "WC")
+points(sim_join_res[,1], sim_join_res[,2], pch = 3, cex=.7, col = "red")
+legend("bottomright", c("Observed", "Simulated"),
+        col = c("blue", "red"), pch = c(1,3), cex = 0.70)
+
+hist(data[,1], breaks = 50, prob = TRUE,  
+     main = "Histogram Observed PLI vs. Simulated PLI Variable",
+     xlab = "PLI")
+lines(density(data[,1]), type = "l", lwd = 3, lty = 2, col = "blue")
+lines(density(sim_join_res[,1]), type = "l", lwd = 3, lty = 3, col = "red")
+legend("topright", c("Observed", "Simulated"), 
+       col = c("blue", "red"), lty = c(2,3), 
+       lwd=3, cex = 0.70)
+
+hist(data[,2], breaks = 50, prob = TRUE,
+     main = "Histogram Observed WC vs. Simulated WC Variable",
+     xlab = "WC")
+lines(density(data[,2]), type = "l", lwd = 3, lty = 2, col = "blue")
+lines(density(sim_join_res[,2]), type = "l",lwd = 3, lty = 3, col = "red")
+legend("topright", c("Observed", "Simulated"), 
+       col = c("blue", "red"), lty = c(2,3), 
+       lwd = 3, cex = 0.70)
+```
+
+### Ilustrate how properties of the data change when paraemters are de/increased
+```{r}
+sim_join_res = sim_join_mod_obs(mu1 = fit[1,], mu2= fit[2,], 
+             sigma1=fit[3,], sigma2=fit[4,], 
+             theta = fit[5,]+3, n = n)
+
+plot(x = data[,1], y = data[,2], pch = 1, cex = 1, col = "blue",
+     main = "Scatterplot: Observed vs. Simulated data ", xlab = "PLI", 
+     ylab = "WC")
+points(sim_join_res[,1], sim_join_res[,2], pch = 3, cex=.7, col = "red")
+legend("bottomright", c("Observed", "Simulated"),
+        col = c("blue", "red"), pch = c(1,3), cex = 0.70)
+
+hist(data[,1], breaks = 50, prob = TRUE,  
+     main = "Histogram Observed PLI vs. Simulated PLI Variable",
+     xlab = "PLI")
+lines(density(data[,1]), type = "l", lwd = 3, lty = 2, col = "blue")
+lines(density(sim_join_res[,1]), type = "l", lwd = 3, lty = 3, col = "red")
+legend("topright", c("Observed", "Simulated"), 
+       col = c("blue", "red"), lty = c(2,3), 
+       lwd=3, cex = 0.70)
+
+hist(data[,2], breaks = 50, prob = TRUE,
+     main = "Histogram Observed WC vs. Simulated WC Variable",
+     xlab = "WC")
+lines(density(data[,2]), type = "l", lwd = 3, lty = 2, col = "blue")
+lines(density(sim_join_res[,2]), type = "l",lwd = 3, lty = 3, col = "red")
+legend("topright", c("Observed", "Simulated"), 
+       col = c("blue", "red"), lty = c(2,3), 
+       lwd = 3, cex = 0.70)
+```
+
+```{r}
+# Illustrate how the properties of the data change when you increase/decrease a 
+# parameter.
+sim_join_res = sim_join_mod_obs(mu1 = fit[1,], mu2= fit[2,], 
+             sigma1=fit[3,], sigma2=fit[4,], 
+             theta = 1, n = n)
+
+plot(x = data[,1], y = data[,2], pch = 1, cex = 1, col = "blue",
+     main = "Scatterplot: Observed vs. Simulated data ", xlab = "PLI", 
+     ylab = "WC")
+points(sim_join_res[,1], sim_join_res[,2], pch = 3, cex=.7, col = "red")
+legend("bottomright", c("Observed", "Simulated"),
+        col = c("blue", "red"), pch = c(1,3), cex = 0.70)
+
+hist(data[,1], breaks = 50, prob = TRUE,  
+     main = "Histogram Observed PLI vs. Simulated PLI Variable",
+     xlab = "PLI")
+lines(density(data[,1]), type = "l", lwd = 3, lty = 2, col = "blue")
+lines(density(sim_join_res[,1]), type = "l", lwd = 3, lty = 3, col = "red")
+legend("topright", c("Observed", "Simulated"), 
+       col = c("blue", "red"), lty = c(2,3), 
+       lwd=3, cex = 0.70)
+
+hist(data[,2], breaks = 50, prob = TRUE,
+     main = "Histogram Observed WC vs. Simulated WC Variable",
+     xlab = "WC")
+lines(density(data[,2]), type = "l", lwd = 3, lty = 2, col = "blue")
+lines(density(sim_join_res[,2]), type = "l",lwd = 3, lty = 3, col = "red")
+legend("topright", c("Observed", "Simulated"), 
+       col = c("blue", "red"), lty = c(2,3), 
+       lwd = 3, cex = 0.70)
+```
+
+```{r}
+sim_join_res = sim_join_mod_obs(mu1 = fit[1,]+.5, mu2= fit[2,]+.5, 
+             sigma1=fit[3,], sigma2=fit[4,], 
+             theta = fit[5,], n = n)
+
+plot(x = data[,1], y = data[,2], pch = 1, cex = 1, col = "blue",
+     main = "Scatterplot: Observed vs. Simulated data ", xlab = "PLI", 
+     ylab = "WC")
+points(sim_join_res[,1], sim_join_res[,2], pch = 3, cex=.7, col = "red")
+legend("bottomright", c("Observed", "Simulated"),
+        col = c("blue", "red"), pch = c(1,3), cex = 0.70)
+
+hist(data[,1], breaks = 50, prob = TRUE,  
+     main = "Histogram Observed PLI vs. Simulated PLI Variable",
+     xlab = "PLI")
+lines(density(data[,1]), type = "l", lwd = 3, lty = 2, col = "blue")
+lines(density(sim_join_res[,1]), type = "l", lwd = 3, lty = 3, col = "red")
+legend("topright", c("Observed", "Simulated"), 
+       col = c("blue", "red"), lty = c(2,3), 
+       lwd=3, cex = 0.70)
+
+hist(data[,2], breaks = 50, prob = TRUE,
+     main = "Histogram Observed WC vs. Simulated WC Variable",
+     xlab = "WC")
+lines(density(data[,2]), type = "l", lwd = 3, lty = 2, col = "blue")
+lines(density(sim_join_res[,2]), type = "l",lwd = 3, lty = 3, col = "red")
+legend("topright", c("Observed", "Simulated"), 
+       col = c("blue", "red"), lty = c(2,3), 
+       lwd = 3, cex = 0.70)
+```
+
+```{r}
+sim_join_res = sim_join_mod_obs(mu1 = fit[1,], mu2= fit[2,], 
+             sigma1=fit[3,]*3, sigma2=fit[4,]*3, 
+             theta = 1, n = n)
+
+plot(x = data[,1], y = data[,2], pch = 1, cex = 1, col = "blue",
+     main = "Scatterplot: Observed vs. Simulated data ", xlab = "PLI", 
+     ylab = "WC")
+points(sim_join_res[,1], sim_join_res[,2], pch = 3, cex=.7, col = "red")
+legend("bottomright", c("Observed", "Simulated"),
+        col = c("blue", "red"), pch = c(1,3), cex = 0.70)
+
+hist(data[,1], breaks = 50, prob = TRUE,  
+     main = "Histogram Observed PLI vs. Simulated PLI Variable",
+     xlab = "PLI")
+lines(density(data[,1]), type = "l", lwd = 3, lty = 2, col = "blue")
+lines(density(sim_join_res[,1]), type = "l", lwd = 3, lty = 3, col = "red")
+legend("topright", c("Observed", "Simulated"), 
+       col = c("blue", "red"), lty = c(2,3), 
+       lwd=3, cex = 0.70)
+
+hist(data[,2], breaks = 50, prob = TRUE,
+     main = "Histogram Observed WC vs. Simulated WC Variable",
+     xlab = "WC")
+lines(density(data[,2]), type = "l", lwd = 3, lty = 2, col = "blue")
+lines(density(sim_join_res[,2]), type = "l",lwd = 3, lty = 3, col = "red")
+legend("topright", c("Observed", "Simulated"), 
+       col = c("blue", "red"), lty = c(2,3), 
+       lwd = 3, cex = 0.70)
+```
+
+
+### Simulation study to understand inner workins of method
+### Fix mu1 = 1, sigma1 = 2, mu2 = 3, sigma2 = 0.5, theta = 2. 
+### For r = 1,...,100: repetitions on n = 200,500,1000 simulated observations
+```{r}
+n = as.vector(c(200, 500, 1000))
+R = 100 # 100 repetitions
+theta8 = rbind( c(1, 2), c(3, 0.5))
+rep_res = list()
+rep_fit = matrix(0, nrow = R, ncol = 6)
+colnames(rep_fit) = c("mle_mu1","mle_mu2", "mle_sigma1", "mle_sigma2", 
+                          "copula_sde", "max_log_l_hood")
+rmse_m = matrix(0, nrow = length(n), ncol = 6)
+colnames(rmse_m) = c("mle_mu1","mle_mu2", "mle_sigma1", "mle_sigma2", 
+                      "copula_sde", "max_log_l_hood")
+row.names(rmse_m) = c("n = 200", "n = 500", "n = 1000")
+time = matrix(0, nrow = R, ncol = length(n))
+
+rmse = function(x) {
+  sd(x) / sqrt(n[i])
+}
+
+for (i in 1:length(n)){
+  for (r in 1:R){
+    U_obs = sim_join_mod_obs(mu1 = 1, mu2 = 3, 
+                             sigma1 = 2, sigma2 = 0.5, 
+                             theta = 2, n = n[i])
+    time[r,i] <- system.time(rep_fit[r,] <- copula_fit(theta = theta8,  data = U_obs))[3]
+    rep_res[i] = list(rep_fit)
+    names(rep_res)[i] = paste0("n", n[i])
+  }
+  rmse_m[i, ] = apply(rep_fit, 2, FUN = rmse)
+}
+
+plot(n, rmse_m[,1], ylim = c(0, max(rmse_m[,1:5])), pch = 19, 
+     col = "dark slate blue",  xlab ="Number of observations n",
+     ylab="RMSE", main = "RMSE as a function of sample size n",
+     cex.main = 1)
+lines(n,rmse_m[,1], type = "b", col = "darkblue")
+points(n,rmse_m[,2], pch = 19, col = "medium slate blue")
+lines(n,rmse_m[,2], type = "b", col = "medium slate blue")
+points(n, rmse_m[,3], pch = 19, col = "medium sea green")
+lines(n,rmse_m[,3], type = "b", col = "medium sea green")
+points(n, rmse_m[,4], pch = 19, col = "light sea green")
+lines(n,rmse_m[,4], type = "b", col = "light sea green")
+points(n, rmse_m[,5], pch = 19, col = "red")
+lines(n,rmse_m[,5], type = "b", col = "red")
+legend("topright", c(expression(mu[1]), expression(mu[2]), 
+                     expression(sigma[1]),expression(sigma[2]),
+                     expression(theta)),
+       col = c("darkblue", "medium slate blue",
+               "medium sea green","light sea green",
+               "red"), lty = c(1,1), 
+       lwd = 3, cex = 0.70)
+
+# plot mean computation time
+mean_time = colMeans(time)
+mean_time
+plot(x = n, y = mean_time, col = "darkblue", 
+     main = "Mean computation time as a function of n", 
+     xlab = "Number of Observations n", ylab = "Mean computation time")
+lines(x = n, mean_time,col = "darkblue", lwd = 2)
+
+```
+
+### Fit all paremeter models and compute expected payout using MCMC simulation
+```{r}
+# fit all model parameters to the observed data
+fit = copula_fit(theta, data)
+n = 10^5
+t = seq(from = 100, to = 200, by = 10) #threshold t
+V = numeric(length(t))
+# price function
+P = function(t) {
+  40000 * exp(-t / 7) 
+}
+# function for expected reinsurance payout
+f = function(x1, x2, t) { 
+  (x1 + x2 > t) * (x1 + x2)
+}
+
+for (i in 1:length(t)){
+  U_obs = sim_join_mod_obs(mu1 = fit[1,], mu2 = fit[2,], 
+                                   sigma1 = fit[3,], sigma2 = fit[4,], 
+                                   theta = fit[5,], n = n)
+  # compute V(t)
+  V[i] = mean(f(x1 = U_obs[,1], x2 = U_obs[,2], t = t[i]))
+}
+
+plot(x = t, y = V, pch = 1, cex= 1, col = "red",
+     main = "Expected Reinsurance Payout V(t) and Price P(t)", xlab = "Treshold t", 
+     ylab = "Insurance Payout")
+lines(t, V, type = "b", lwd = 2, lty = 3, col = "red")
+lines(t, P(t), type = "b", lwd = 2, lty = 2, col = "darkblue")
+legend("topright", c("V(t)", "P(t)"), 
+       col = c("red", "darkblue"), lty = c(3,2), 
+       lwd = 2, cex = 0.70)
+```
+
+### Compute expected reinsurance payout using importance sampling
+```{r}
+# V(t) are quite noisy. Compute the values again using Importance Sampling
+joint = function(x1, x2, mu1, sigma1, mu2, sigma2, theta) {
+  fx1 = dlnorm(x1, meanlog = mu1, sdlog = sigma1)
+  fx2 = dlnorm(x2, meanlog = mu2, sdlog = sigma2)
+  Fx1 = plnorm(x1, meanlog = mu1, sdlog = sigma1)
+  Fx2 = plnorm(x2,  meanlog = mu2, sdlog = sigma2)
+  U = cbind(Fx1, Fx2)
+  copula_res = dCopula(U, joeCopula(theta))
+  dens = fx1 * fx2 * copula_res # joint density = prod of marginals and copula
+  return(dens)
+}
+
+theta = rbind( c(mean(x1), sd(x1)), c(mean(x2), sd(x2)))
+fit = copula_fit(theta, data)
+mu1 = fit[1,]; mu2 = fit[2,]; sigma1 = fit[3,]; sigma2 = fit[4,]
+copula_theta = fit[5,]
+
+g = function(x1, x2, t, fx_y, fy_y) {
+  (x1 + x2) * (x1 + x2 > t) * fx_y / fy_y
+}
+
+# price function 
+P = function(t) {
+  40000 * exp(-t / 7) 
+}
+
+n = 10^5
+V_res = numeric(length(t))
+for (i in 1:length(t)) {
+  U_obs = sim_join_mod_obs(mu1 = 2+mu1, mu2 = 2+mu2, 
+                       sigma1 = sigma1, sigma2 = sigma2, 
+                       theta = copula_theta, n = n)
+  fx_y = joint(U_obs[, 1], U_obs[, 2], mu1, sigma1, mu2, sigma2, copula_theta)
+  fy_y = joint(U_obs[, 1], U_obs[, 2], 2 + mu1, sigma1, 2+mu2, sigma2, copula_theta)
+  V_res[i] = mean(g(U_obs[, 1], U_obs[, 2], t[i], fx_y, fy_y))
+}
+
+# Regular scale
+P = P(t) # price
+plot(x = t, y = V_res, ylim = c(0, max(V_res)), pch = 1, cex= 1, 
+     col = "red",
+     main = "Importance Sampling: Expected Reinsurance Payout V(t) and Price P(t)", 
+     cex.main= .9, xlab = "Treshold t", ylab = "Insurance Payout")
+lines(t, V_res, type = "b", lwd = 2,lty = 3, col = "red")
+lines(t, P, type = "b", lwd = 2,lty = 2, col = "darkblue")
+legend("topright", c("V", "P"), 
+       col = c("red", "darkblue"), lty = c(3,2), 
+       lwd=2, cex = 0.70)
+
+# log scale
+logV = log(V_res)
+logP = log(P)
+plot(x = t, y = logV, ylim = c(min(logP), max(logP)), pch = 1, cex= 1,
+     col = "red",
+     main = "Importance Sampling: Log of Expected Reinsurance Payout V(t) and Price P(t)", 
+     cex.main= .8, xlab = "Treshold t", ylab = "Insurance Payout")
+lines(t, logV, type = "b", lwd = 2, lty = 3, col = "red")
+lines(t, logP, type = "b", lwd = 2, lty = 2, col = "darkblue")
+legend("topright", c("Log(V(t))", "Log(P(t))"), 
+       col = c("red", "darkblue"), lty = c(3,2), 
+       lwd = 2, cex = 0.70)
+```
+
+### Bootstrap method to compute 80% confidence intervals for expected payout
+```{r}
+# Use a bootstrap method to compute 80 % CI for V(t)
+n = nrow(data)
+B = 1000
+V_temp = numeric(length(t))
+V_boot = matrix(nrow = B, ncol = length(t))
+theta = theta = rbind( c(mean(x1), sd(x1)), c(mean(x2), sd(x2)))
+
+for (b in 1:B){
+  i = sample(1:n, n, replace = T)
+  X = data[i,1:2]
+  modfit = copula_fit(theta, X)
+  mu1 = modfit[1,]; mu2 = modfit[2,]; sigma1 = modfit[3,];  sigma2 = modfit[4,];
+  copula_theta = modfit[5,]
+  for (j in 1:length(t)){
+  U_obs = sim_join_mod_obs(mu1 = mu1 + 2, mu2 =  mu2 + 2, 
+                           sigma1 = sigma1, sigma2 = sigma2, 
+                           theta = copula_theta, n = n)
+  fx_y = joint(U_obs[, 1], U_obs[, 2], mu1, sigma1, mu2, sigma2, copula_theta)
+  fy_y = joint(U_obs[, 1], U_obs[, 2], 2+mu1, sigma1, 2+mu2, sigma2, copula_theta)
+  
+  V_temp[j] = mean(g(U_obs[, 1], U_obs[, 2], t[j], fx_y, fy_y))
+  }
+  V_boot[b,] = V_temp
+}
+V_boot
+low_bound = numeric(length(t))
+up_bound = numeric(length(t))
+for (i in 1:length(t)){
+  low_bound[i] = sort(V_boot[,i])[B*0.10]
+  up_bound[i] = sort(V_boot[,i])[B*0.90]
+}
+# min(low_bound)
+# min(up_bound)
+# min(V_res)
+# min(P)
+# max(P)
+# max(V_res)
+# max(up_bound)
+# max(low_bound)
+
+plot(x = t, y = V_res, ylim = c(min(P), max(up_bound)), pch = 1, cex= 1, 
+     col = "red",
+     main = "Bootstraped 80 % CI: Expected Reinsurance Payout V(t) and Price P(t)", 
+     xlab = "Treshold t", ylab = "Insurance Payout", cex.main=.9)
+lines(t, V_res, type = "b", lwd = 2, col = "red")
+lines(t, P, type = "b", lwd = 2, , lty = 3, col = "darkblue")
+segments(t, up_bound, t, low_bound, lwd = 2, col = "grey25")
+arrows(t, up_bound, t, low_bound, code = 3, lwd = 2, col = "grey25", angle = 90, 
+       length = 0.1)
+legend("topright", c("V", "P", "80 % CI"), 
+       col = c("red", "darkblue", "grey25"), lty = c(3,2,1), 
+       lwd = 2, cex = 0.70)
+
+# log scale 
+loglow =  log(low_bound)
+logup = log(up_bound)
+# min(logup)
+# min(loglow)
+# min(logV)
+# min(logP)
+# max(logV)
+# max(logP)
+# max(logup)
+# max(loglow)
+plot(x = t, y = logV, ylim = c(min(logP), max(logup)), pch = 1, cex= 1, 
+     col = "red",
+     main = "Bootstraped 80 % CI: Expected Reinsurance Payout V(t) and Price P(t)", 
+     xlab = "Treshold t", ylab = "Insurance Payout", cex.main=.9)
+lines(t, logV, type = "b", lwd = 2, col = "red")
+lines(t, logP, type = "b", lwd = 2, , lty = 3, col = "darkblue")
+segments(t, loglow, t, logup, lwd = 2, col = "grey25")
+arrows(t, loglow, t, logup, code = 3, lwd = 2, col = "grey25", angle = 90, 
+       length = 0.1)
+legend("topright", c("log(V)", "log(P)", "80 % CI"), 
+       col = c("red", "darkblue", "grey25"), lty = c(3,2,1), 
+       lwd = 2, cex = 0.70)
+```
+
+### Appendix for Exercise 8: Auxilliary Simulations
+```{r}
+# sigma 1 = sigma 2 = 0.5
+n = as.vector(c(200, 500, 1000))
+R = 100 # 100 repetitions
+theta8 = rbind( c(1, 2), c(3, 0.5))
+rep_res = list()
+rep_fit = matrix(0, nrow = R, ncol = 6)
+colnames(rep_fit) = c("mle_mu1","mle_mu2", "mle_sigma1", "mle_sigma2", 
+                          "copula_sde", "max_log_l_hood")
+rmse_m = matrix(0, nrow = length(n), ncol = 6)
+colnames(rmse_m) = c("mle_mu1","mle_mu2", "mle_sigma1", "mle_sigma2", 
+                      "copula_sde", "max_log_l_hood")
+row.names(rmse_m) = c("n = 200", "n = 500", "n = 1000")
+time = matrix(0, nrow = R, ncol = length(n))
+
+rmse = function(x) {
+  sd(x) / sqrt(n[i])
+}
+
+for (i in 1:length(n)){
+  for (r in 1:R){
+    U_obs = sim_join_mod_obs(mu1 = 1, mu2 = 3, 
+                             sigma1 = 0.5, sigma2 = 0.5, 
+                             theta = 2, n = n[i])
+    time[r,i] <- system.time(rep_fit[r,] <- copula_fit(theta = theta8,  data = U_obs))[3]
+    rep_res[i] = list(rep_fit)
+    names(rep_res)[i] = paste0("n", n[i])
+  }
+  rmse_m[i, ] = apply(rep_fit, 2, FUN = rmse)
+}
+
+plot(n, rmse_m[,1], ylim = c(0, max(rmse_m[,1:5])), pch = 19, 
+     col = "dark slate blue",  xlab ="Number of observations n",
+     ylab="RMSE", main = "RMSE as a function of sample size n",
+     cex.main = 1)
+lines(n,rmse_m[,1], type = "b", col = "darkblue")
+points(n,rmse_m[,2], pch = 19, col = "medium slate blue")
+lines(n,rmse_m[,2], type = "b", col = "medium slate blue")
+points(n, rmse_m[,3], pch = 19, col = "medium sea green")
+lines(n,rmse_m[,3], type = "b", col = "medium sea green")
+points(n, rmse_m[,4], pch = 19, col = "light sea green")
+lines(n,rmse_m[,4], type = "b", col = "light sea green")
+points(n, rmse_m[,5], pch = 19, col = "red")
+lines(n,rmse_m[,5], type = "b", col = "red")
+legend("topright", c(expression(mu[1]), expression(mu[2]), 
+                     expression(sigma[1]),expression(sigma[2]),
+                     expression(theta)),
+       col = c("darkblue", "medium slate blue",
+               "medium sea green","light sea green",
+               "red"), lty = c(1,1), 
+       lwd = 3, cex = 0.70)
+
+# plot mean computation time
+mean_time = colMeans(time)
+mean_time
+plot(x = n, y = mean_time, col = "darkblue", 
+     main = "Mean computation time as a function of n", 
+     xlab = "Number of Observations n", ylab = "Mean computation time")
+lines(x = n, mean_time,col = "darkblue", lwd = 2)
+
+```
+
+```{r}
+# theta  = 1.6
+n = as.vector(c(200, 500, 1000))
+R = 100 # 100 repetitions
+theta8 = rbind( c(1, 2), c(3, 0.5))
+rep_res = list()
+rep_fit = matrix(0, nrow = R, ncol = 6)
+colnames(rep_fit) = c("mle_mu1","mle_mu2", "mle_sigma1", "mle_sigma2", 
+                          "copula_sde", "max_log_l_hood")
+rmse_m = matrix(0, nrow = length(n), ncol = 6)
+colnames(rmse_m) = c("mle_mu1","mle_mu2", "mle_sigma1", "mle_sigma2", 
+                      "copula_sde", "max_log_l_hood")
+row.names(rmse_m) = c("n = 200", "n = 500", "n = 1000")
+time = matrix(0, nrow = R, ncol = length(n))
+
+rmse = function(x) {
+  sd(x) / sqrt(n[i])
+}
+
+for (i in 1:length(n)){
+  for (r in 1:R){
+    U_obs = sim_join_mod_obs(mu1 = 1, mu2 = 3, 
+                             sigma1 = 2, sigma2 = 0.5, 
+                             theta = 1.6, n = n[i])
+    time[r,i] <- system.time(rep_fit[r,] <- copula_fit(theta = theta8,  data = U_obs))[3]
+    rep_res[i] = list(rep_fit)
+    names(rep_res)[i] = paste0("n", n[i])
+  }
+  rmse_m[i, ] = apply(rep_fit, 2, FUN = rmse)
+}
+
+plot(n, rmse_m[,1], ylim = c(0, max(rmse_m[,1:5])), pch = 19, 
+     col = "dark slate blue",  xlab ="Number of observations n",
+     ylab="RMSE", main = "RMSE as a function of sample size n",
+     cex.main = 1)
+lines(n,rmse_m[,1], type = "b", col = "darkblue")
+points(n,rmse_m[,2], pch = 19, col = "medium slate blue")
+lines(n,rmse_m[,2], type = "b", col = "medium slate blue")
+points(n, rmse_m[,3], pch = 19, col = "medium sea green")
+lines(n,rmse_m[,3], type = "b", col = "medium sea green")
+points(n, rmse_m[,4], pch = 19, col = "light sea green")
+lines(n,rmse_m[,4], type = "b", col = "light sea green")
+points(n, rmse_m[,5], pch = 19, col = "red")
+lines(n,rmse_m[,5], type = "b", col = "red")
+legend("topright", c(expression(mu[1]), expression(mu[2]), 
+                     expression(sigma[1]),expression(sigma[2]),
+                     expression(theta)),
+       col = c("darkblue", "medium slate blue",
+               "medium sea green","light sea green",
+               "red"), lty = c(1,1), 
+       lwd = 3, cex = 0.70)
+
+# plot mean computation time
+mean_time = colMeans(time)
+mean_time
+plot(x = n, y = mean_time, col = "darkblue", 
+     main = "Mean computation time as a function of n", 
+     xlab = "Number of Observations n", ylab = "Mean computation time")
+lines(x = n, mean_time,col = "darkblue", lwd = 2)
+````
+
+```{r}
+# theta  = 5
+n = as.vector(c(200, 500, 1000))
+R = 100 # 100 repetitions
+theta8 = rbind( c(1, 2), c(3, 0.5))
+rep_res = list()
+rep_fit = matrix(0, nrow = R, ncol = 6)
+colnames(rep_fit) = c("mle_mu1","mle_mu2", "mle_sigma1", "mle_sigma2", 
+                          "copula_sde", "max_log_l_hood")
+rmse_m = matrix(0, nrow = length(n), ncol = 6)
+colnames(rmse_m) = c("mle_mu1","mle_mu2", "mle_sigma1", "mle_sigma2", 
+                      "copula_sde", "max_log_l_hood")
+row.names(rmse_m) = c("n = 200", "n = 500", "n = 1000")
+time = matrix(0, nrow = R, ncol = length(n))
+
+rmse = function(x) {
+  sd(x) / sqrt(n[i])
+}
+
+for (i in 1:length(n)){
+  for (r in 1:R){
+    U_obs = sim_join_mod_obs(mu1 = 1, mu2 = 3, 
+                             sigma1 = 2, sigma2 = 0.5, 
+                             theta = 5, n = n[i])
+    time[r,i] <- system.time(rep_fit[r,] <- copula_fit(theta = theta8,  data = U_obs))[3]
+    rep_res[i] = list(rep_fit)
+    names(rep_res)[i] = paste0("n", n[i])
+  }
+  rmse_m[i, ] = apply(rep_fit, 2, FUN = rmse)
+}
+
+plot(n, rmse_m[,1], ylim = c(0, max(rmse_m[,1:5])), pch = 19, 
+     col = "dark slate blue",  xlab ="Number of observations n",
+     ylab="RMSE", main = "RMSE as a function of sample size n",
+     cex.main = 1)
+lines(n,rmse_m[,1], type = "b", col = "darkblue")
+points(n,rmse_m[,2], pch = 19, col = "medium slate blue")
+lines(n,rmse_m[,2], type = "b", col = "medium slate blue")
+points(n, rmse_m[,3], pch = 19, col = "medium sea green")
+lines(n,rmse_m[,3], type = "b", col = "medium sea green")
+points(n, rmse_m[,4], pch = 19, col = "light sea green")
+lines(n,rmse_m[,4], type = "b", col = "light sea green")
+points(n, rmse_m[,5], pch = 19, col = "red")
+lines(n,rmse_m[,5], type = "b", col = "red")
+legend("topright", c(expression(mu[1]), expression(mu[2]), 
+                     expression(sigma[1]),expression(sigma[2]),
+                     expression(theta)),
+       col = c("darkblue", "medium slate blue",
+               "medium sea green","light sea green",
+               "red"), lty = c(1,1), 
+       lwd = 3, cex = 0.70)
+
+# plot mean computation time
+mean_time = colMeans(time)
+mean_time
+plot(x = n, y = mean_time, col = "darkblue", 
+     main = "Mean computation time as a function of n", 
+     xlab = "Number of Observations n", ylab = "Mean computation time")
+lines(x = n, mean_time,col = "darkblue", lwd = 2)
+````
